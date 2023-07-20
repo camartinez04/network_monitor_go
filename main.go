@@ -34,6 +34,7 @@ type Status struct {
 	Cluster Cluster `json:"cluster"`
 }
 
+// getNodes gets the list of nodes in the cluster
 func getNodes() {
 	out, err := exec.Command(pxctlBin, "status", "-j").Output()
 	if err != nil {
@@ -51,6 +52,7 @@ func getNodes() {
 	}
 }
 
+// getLocalIP gets the local IP address of the node
 func getLocalIP() {
 	out, err := exec.Command("hostname", "-I").Output()
 	if err != nil {
@@ -64,6 +66,7 @@ func getLocalIP() {
 	}
 }
 
+// pingNode pings the node from the specified interface
 func pingNode(interfaceName, node string) {
 
 	pingCmd := fmt.Sprintf("ping -I %s -c 1 %s", interfaceName, node)
@@ -76,6 +79,7 @@ func pingNode(interfaceName, node string) {
 
 }
 
+// removeService removes the systemd service
 func removeService() {
 	err := exec.Command("systemctl", "stop", "portworx_network_monitor.service").Run()
 	if err != nil {
@@ -97,6 +101,7 @@ func removeService() {
 	}
 }
 
+// installService installs the systemd service
 func installService(interfaceName string, frequency int, ip string) {
 	serviceDefinition := `
 [Unit]
@@ -113,6 +118,7 @@ ExecStart=PING_CMD
 
 [Install]
 WantedBy=multi-user.target`
+	log.Printf("Installing service with interface %s, frequency %d, ip %s...", interfaceName, frequency, ip)
 	removeService()
 	pingCmd := fmt.Sprintf("%s -interface %s -frequency %d -ip %s -r", networkMonitorBin, interfaceName, frequency, ip)
 	serviceDefinition = strings.Replace(serviceDefinition, "PING_CMD", pingCmd, 1)
@@ -121,16 +127,19 @@ WantedBy=multi-user.target`
 		log.Printf("Failed to write systemd service file: %v", err)
 		return
 	}
+	log.Println("Reloading systemd...")
 	err = exec.Command("systemctl", "daemon-reload").Run()
 	if err != nil {
 		log.Printf("Failed to reload systemd: %v", err)
 		return
 	}
+	log.Println("Enabling service...")
 	err = exec.Command("systemctl", "enable", "portworx_network_monitor.service").Run()
 	if err != nil {
 		log.Printf("Failed to enable service: %v", err)
 		return
 	}
+	log.Println("Starting service...")
 	err = exec.Command("systemctl", "start", "portworx_network_monitor.service").Run()
 	if err != nil {
 		log.Printf("Failed to start service: %v", err)
@@ -140,6 +149,7 @@ WantedBy=multi-user.target`
 	fmt.Println(string(out))
 }
 
+// main function
 func main() {
 	interfaceName := flag.String("interface", "", "interface to run ping from")
 	frequency := flag.Int("frequency", 3, "frequency for ping")

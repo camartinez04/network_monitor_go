@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -67,16 +68,15 @@ func getLocalIP() {
 }
 
 // pingNode pings the node from the specified interface
-func pingNode(interfaceName, node string) {
-
-	pingCmd := fmt.Sprintf("ping -I %s -c 1 %s", interfaceName, node)
+func pingNode(interfaceName, node string) (string, error) {
+	pingTimeout := 5 // Set the desired timeout in seconds
+	pingCmd := fmt.Sprintf("ping -I %s -c 1 -W %d %s", interfaceName, pingTimeout, node)
 	out, err := exec.Command("bash", "-c", pingCmd).Output()
 	if err != nil {
 		log.Printf("Ping failed on node %s: %v", node, err)
-		return
+		return "", err
 	}
-	fmt.Println(string(out))
-
+	return string(out), nil
 }
 
 // removeService removes the systemd service
@@ -149,7 +149,7 @@ WantedBy=multi-user.target`
 	fmt.Println(string(out))
 }
 
-// main function
+// main function with sync.WaitGroup to wait for all goroutines to finish and prevent memory leaks
 func main() {
 	interfaceName := flag.String("interface", "", "interface to run ping from")
 	frequency := flag.Int("frequency", 3, "frequency for ping")
@@ -174,13 +174,40 @@ func main() {
 		installService(*interfaceName, *frequency, localIP)
 	} else {
 		for {
+			var wg sync.WaitGroup
+			results := make(chan string, len(nodes))
+			errs := make(chan error, len(nodes))
 			for _, node := range nodes {
+				wg.Add(1)
 				if localIP == node {
 					log.Println("skipping local node")
+					wg.Done()
 					continue
 				}
-				go pingNode(*interfaceName, node)
+				go func(n string) {
+					defer wg.Done()
+					res, err := pingNode(*interfaceName, n)
+					if err != nil {
+						errs <- err
+					} else {
+						results <- res
+					}
+				}(node)
 			}
+			go func() {
+				wg.Wait()
+				close(results)
+				close(errs)
+			}()
+
+			// make sure all goroutines finish
+			for result := range results {
+				fmt.Println(result)
+			}
+			for err := range errs {
+				log.Printf("Ping failed: %v", err)
+			}
+
 			time.Sleep(time.Duration(*frequency) * time.Second)
 		}
 	}

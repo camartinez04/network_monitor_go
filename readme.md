@@ -20,6 +20,8 @@ To build this project, you can use the standard Go build command:
 CGO_ENABLED=0 GOARCH=amd64 GOOS=linux go build -o network_monitor
 ```
 
+This will produce an executable named `network_monitor`.
+
 ## Usage
 
 Here's a quick overview of the command-line flags:
@@ -37,6 +39,6 @@ cd /opt/pwx/oci/rootfs/usr/local/bin/
 ./network_monitor -interface ens160 -frequency 5 -ip 10.235.175.225
 ```
 
-
-This will produce an executable named `network_monitor`.
-
+Logs are written to `/var/lib/osd/log/nw_mon_log` that have rotation enabled. 
+The log file is rotated every day, and it retains for 60 days. 
+It also sends the output to stdout.

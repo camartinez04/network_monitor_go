@@ -4,9 +4,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	rotatelogs "github.com/lestrrat-go/file-rotatelogs"
+	"github.com/rifflock/lfshook"
+	"github.com/sirupsen/logrus"
+	"io"
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -36,15 +41,15 @@ type Status struct {
 }
 
 // getNodes gets the list of nodes in the cluster
-func getNodes() {
+func getNodes(logger *logrus.Logger) {
 	out, err := exec.Command(pxctlBin, "status", "-j").Output()
 	if err != nil {
-		log.Fatalf("Failed to execute pxctl status command: %v", err)
+		logger.Fatalf("Failed to execute pxctl status command: %v", err)
 	}
 
 	var status Status
 	if err := json.Unmarshal(out, &status); err != nil {
-		log.Fatalf("Failed to parse JSON output: %v", err)
+		logger.Fatalf("Failed to parse JSON output: %v", err)
 	}
 
 	nodes = make([]string, len(status.Cluster.Nodes))
@@ -54,55 +59,55 @@ func getNodes() {
 }
 
 // getLocalIP gets the local IP address of the node
-func getLocalIP() {
+func getLocalIP(logger *logrus.Logger) {
 	out, err := exec.Command("hostname", "-I").Output()
 	if err != nil {
-		log.Fatalf("Failed to execute hostname command: %v", err)
+		logger.Fatalf("Failed to execute hostname command: %v", err)
 	}
 	ips := strings.Fields(string(out))
 	if len(ips) > 0 {
 		localIP = ips[0]
 	} else {
-		log.Fatalf("No IP address returned by hostname command")
+		logger.Fatalf("No IP address returned by hostname command")
 	}
 }
 
 // pingNode pings the node from the specified interface
-func pingNode(interfaceName, node string) (string, error) {
+func pingNode(interfaceName, node string, logger *logrus.Logger) (string, error) {
 	pingTimeout := 5 // Set the desired timeout in seconds
 	pingCmd := fmt.Sprintf("ping -I %s -c 1 -W %d %s", interfaceName, pingTimeout, node)
 	out, err := exec.Command("bash", "-c", pingCmd).Output()
 	if err != nil {
-		log.Printf("Ping failed on node %s: %v", node, err)
+		logger.Printf("Ping failed on node %s: %v", node, err)
 		return "", err
 	}
 	return string(out), nil
 }
 
 // removeService removes the systemd service
-func removeService() {
+func removeService(logger *logrus.Logger) {
 	err := exec.Command("systemctl", "stop", "portworx_network_monitor.service").Run()
 	if err != nil {
-		log.Printf("Failed to stop service: %v", err)
+		logger.Printf("Failed to stop service: %v", err)
 	}
 	err = exec.Command("systemctl", "disable", "portworx_network_monitor.service").Run()
 	if err != nil {
-		log.Printf("Failed to disable service: %v", err)
+		logger.Printf("Failed to disable service: %v", err)
 	}
 	err = exec.Command("systemctl", "daemon-reload").Run()
 	if err != nil {
-		log.Printf("Failed to reload systemd: %v", err)
+		logger.Printf("Failed to reload systemd: %v", err)
 	}
 	if _, err := os.Stat(serviceFile); err == nil {
 		err := os.Remove(serviceFile)
 		if err != nil {
-			log.Printf("Failed to remove service file: %v", err)
+			logger.Printf("Failed to remove service file: %v", err)
 		}
 	}
 }
 
 // installService installs the systemd service
-func installService(interfaceName string, frequency int, ip string) {
+func installService(interfaceName string, frequency int, ip string, logger *logrus.Logger) {
 	serviceDefinition := `
 [Unit]
 Description=portworx network monitor service
@@ -118,39 +123,91 @@ ExecStart=PING_CMD
 
 [Install]
 WantedBy=multi-user.target`
-	log.Printf("Installing service with interface %s, frequency %d, ip %s...", interfaceName, frequency, ip)
-	removeService()
+	logger.Printf("Installing service with interface %s, frequency %d, ip %s...", interfaceName, frequency, ip)
+	removeService(logger)
 	pingCmd := fmt.Sprintf("%s -interface %s -frequency %d -ip %s -r", networkMonitorBin, interfaceName, frequency, ip)
 	serviceDefinition = strings.Replace(serviceDefinition, "PING_CMD", pingCmd, 1)
 	err := os.WriteFile(serviceFile, []byte(serviceDefinition), 0644)
 	if err != nil {
-		log.Printf("Failed to write systemd service file: %v", err)
+		logger.Printf("Failed to write systemd service file: %v", err)
 		return
 	}
-	log.Println("Reloading systemd...")
+	logger.Println("Reloading systemd...")
 	err = exec.Command("systemctl", "daemon-reload").Run()
 	if err != nil {
-		log.Printf("Failed to reload systemd: %v", err)
+		logger.Printf("Failed to reload systemd: %v", err)
 		return
 	}
-	log.Println("Enabling service...")
+	logger.Println("Enabling service...")
 	err = exec.Command("systemctl", "enable", "portworx_network_monitor.service").Run()
 	if err != nil {
-		log.Printf("Failed to enable service: %v", err)
+		logger.Printf("Failed to enable service: %v", err)
 		return
 	}
-	log.Println("Starting service...")
+	logger.Println("Starting service...")
 	err = exec.Command("systemctl", "start", "portworx_network_monitor.service").Run()
 	if err != nil {
-		log.Printf("Failed to start service: %v", err)
+		logger.Printf("Failed to start service: %v", err)
 		return
 	}
 	out, _ := exec.Command("systemctl", "status", "portworx_network_monitor.service").Output()
 	fmt.Println(string(out))
 }
 
+// setupLogging sets up logging to a file and returns a logrus logger
+func setupLogging() *logrus.Logger {
+	logPath := "/var/lib/osd/log/nw_mon_log/nw_mon.log"
+	err := os.MkdirAll(path.Dir(logPath), os.ModePerm)
+	if err != nil {
+		return nil
+	}
+
+	// setting logrus logger
+	logger := logrus.New()
+
+	logger.SetFormatter(&logrus.TextFormatter{
+		TimestampFormat: "2006-01-02 15:04:05",
+		FullTimestamp:   true,
+	})
+
+	logWriter, err := rotatelogs.New(
+		logPath+".%Y%m%d%H%M",
+		rotatelogs.WithLinkName(logPath),          // generate softlink
+		rotatelogs.WithMaxAge(24*time.Hour*60),    // max age, 60 days
+		rotatelogs.WithRotationTime(time.Hour*24), // log cut, 24 hours
+	)
+	if err != nil {
+		log.Fatalf("Failed to create rotatelogs: %v", err)
+	}
+
+	writeMap := lfshook.WriterMap{
+		logrus.InfoLevel:  logWriter,
+		logrus.FatalLevel: logWriter,
+		logrus.DebugLevel: logWriter,
+		logrus.WarnLevel:  logWriter,
+		logrus.ErrorLevel: logWriter,
+		logrus.PanicLevel: logWriter,
+	}
+
+	lfHook := lfshook.NewHook(writeMap, &logrus.TextFormatter{
+		TimestampFormat: "2006-01-02 15:04:05",
+	})
+
+	// add hook to logger
+	logger.AddHook(lfHook)
+
+	// Output to stdout instead of the default stderr, also to the file
+	logger.SetOutput(io.MultiWriter(os.Stdout, logWriter))
+
+	return logger
+}
+
 // main function with sync.WaitGroup to wait for all goroutines to finish and prevent memory leaks
 func main() {
+	// setup logging
+	logger := setupLogging()
+
+	logger.Info("Set up logging for NW Monitor")
 	interfaceName := flag.String("interface", "", "interface to run ping from")
 	frequency := flag.Int("frequency", 3, "frequency for ping")
 	ip := flag.String("ip", "", "this node's ip")
@@ -158,20 +215,17 @@ func main() {
 	flag.Parse()
 
 	if *ip == "" {
-		getLocalIP()
+		getLocalIP(logger)
 	} else {
 		localIP = *ip
 	}
 
 	if nodes == nil {
-		getNodes()
+		getNodes(logger)
 	}
 
-	// setup logging
-	log.SetOutput(os.Stdout)
-
 	if !*r {
-		installService(*interfaceName, *frequency, localIP)
+		installService(*interfaceName, *frequency, localIP, logger)
 	} else {
 		for {
 			var wg sync.WaitGroup
@@ -180,13 +234,13 @@ func main() {
 			for _, node := range nodes {
 				wg.Add(1)
 				if localIP == node {
-					log.Println("skipping local node")
+					logger.Println("skipping local node")
 					wg.Done()
 					continue
 				}
 				go func(n string) {
 					defer wg.Done()
-					res, err := pingNode(*interfaceName, n)
+					res, err := pingNode(*interfaceName, n, logger)
 					if err != nil {
 						errs <- err
 					} else {
@@ -202,10 +256,10 @@ func main() {
 
 			// make sure all goroutines finish
 			for result := range results {
-				fmt.Println(result)
+				logger.Print(result)
 			}
 			for err := range errs {
-				log.Printf("Ping failed: %v", err)
+				logger.Printf("Ping failed: %v", err)
 			}
 
 			time.Sleep(time.Duration(*frequency) * time.Second)

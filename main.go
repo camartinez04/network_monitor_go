@@ -78,7 +78,7 @@ func pingNode(interfaceName, node string, logger *logrus.Logger) (string, error)
 	pingCmd := fmt.Sprintf("ping -I %s -c 1 -W %d %s", interfaceName, pingTimeout, node)
 	out, err := exec.Command("bash", "-c", pingCmd).Output()
 	if err != nil {
-		logger.Printf("Ping failed on node %s: %v", node, err)
+		logger.Errorf("Ping failed on node %s: %v", node, err)
 		return "", err
 	}
 	return string(out), nil
@@ -88,11 +88,11 @@ func pingNode(interfaceName, node string, logger *logrus.Logger) (string, error)
 func removeService(logger *logrus.Logger) {
 	err := exec.Command("systemctl", "stop", "portworx_network_monitor.service").Run()
 	if err != nil {
-		logger.Printf("Failed to stop service: %v", err)
+		logger.Errorf("Failed to stop service: %v", err)
 	}
 	err = exec.Command("systemctl", "disable", "portworx_network_monitor.service").Run()
 	if err != nil {
-		logger.Printf("Failed to disable service: %v", err)
+		logger.Errorf("Failed to disable service: %v", err)
 	}
 	err = exec.Command("systemctl", "daemon-reload").Run()
 	if err != nil {
@@ -101,7 +101,7 @@ func removeService(logger *logrus.Logger) {
 	if _, err := os.Stat(serviceFile); err == nil {
 		err := os.Remove(serviceFile)
 		if err != nil {
-			logger.Printf("Failed to remove service file: %v", err)
+			logger.Warnf("Failed to remove service file: %v", err)
 		}
 	}
 }
@@ -129,25 +129,25 @@ WantedBy=multi-user.target`
 	serviceDefinition = strings.Replace(serviceDefinition, "PING_CMD", pingCmd, 1)
 	err := os.WriteFile(serviceFile, []byte(serviceDefinition), 0644)
 	if err != nil {
-		logger.Printf("Failed to write systemd service file: %v", err)
+		logger.Warnf("Failed to write systemd service file: %v", err)
 		return
 	}
 	logger.Println("Reloading systemd...")
 	err = exec.Command("systemctl", "daemon-reload").Run()
 	if err != nil {
-		logger.Printf("Failed to reload systemd: %v", err)
+		logger.Warnf("Failed to reload systemd: %v", err)
 		return
 	}
 	logger.Println("Enabling service...")
 	err = exec.Command("systemctl", "enable", "portworx_network_monitor.service").Run()
 	if err != nil {
-		logger.Printf("Failed to enable service: %v", err)
+		logger.Errorf("Failed to enable service: %v", err)
 		return
 	}
 	logger.Println("Starting service...")
 	err = exec.Command("systemctl", "start", "portworx_network_monitor.service").Run()
 	if err != nil {
-		logger.Printf("Failed to start service: %v", err)
+		logger.Errorf("Failed to start service: %v", err)
 		return
 	}
 	out, _ := exec.Command("systemctl", "status", "portworx_network_monitor.service").Output()
@@ -259,7 +259,7 @@ func main() {
 				logger.Print(result)
 			}
 			for err := range errs {
-				logger.Printf("Ping failed: %v", err)
+				logger.Errorf("Ping failed: %v", err)
 			}
 
 			time.Sleep(time.Duration(*frequency) * time.Second)

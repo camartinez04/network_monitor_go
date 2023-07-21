@@ -175,6 +175,7 @@ func setupLogging() *logrus.Logger {
 		rotatelogs.WithLinkName(logPath),          // generate softlink
 		rotatelogs.WithMaxAge(24*time.Hour*60),    // max age, 60 days
 		rotatelogs.WithRotationTime(time.Hour*24), // log cut, 24 hours
+		rotatelogs.WithRotationSize(20*1024*1024), // enforce rotation when the log size reaches 20MB
 	)
 	if err != nil {
 		log.Fatalf("Failed to create rotatelogs: %v", err)

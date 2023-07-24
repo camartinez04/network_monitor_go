@@ -206,11 +206,11 @@ func setupLogging() *logrus.Logger {
 		TimestampFormat: "2006-01-02 15:04:05",
 	})
 
-	// add hook to logger
+	// add hook to logger, this writes to the log file located at logPath
 	logger.AddHook(lfHook)
 
-	// Output to stdout instead of the default stderr, also to the file
-	logger.SetOutput(io.MultiWriter(os.Stdout, logWriter))
+	// add hook to logger, this writes to stdout
+	logger.SetOutput(io.MultiWriter(os.Stdout))
 
 	return logger
 }

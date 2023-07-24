@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -73,10 +74,12 @@ func getLocalIP(logger *logrus.Logger) {
 }
 
 // pingNode pings the node from the specified interface
-func pingNode(interfaceName, node string, logger *logrus.Logger) (string, error) {
+func pingNode(ctx context.Context, interfaceName, node string, logger *logrus.Logger) (string, error) {
 	pingTimeout := 5 // Set the desired timeout in seconds
 	pingCmd := fmt.Sprintf("ping -I %s -c 1 -W %d %s", interfaceName, pingTimeout, node)
-	out, err := exec.Command("bash", "-c", pingCmd).Output()
+
+	cmd := exec.CommandContext(ctx, "bash", "-c", pingCmd)
+	out, err := cmd.Output()
 	if err != nil {
 		logger.Errorf("Ping failed on node %s: %v", node, err)
 		return "", err
@@ -116,8 +119,8 @@ StartLimitIntervalSec=0s
 
 [Service]
 Type=simple
-Restart=on-failure
-RestartSec=60
+RuntimeMaxSec=1800s
+Restart=always
 User=root
 ExecStart=PING_CMD
 
@@ -169,6 +172,13 @@ func setupLogging() *logrus.Logger {
 		TimestampFormat: "2006-01-02 15:04:05",
 		FullTimestamp:   true,
 	})
+
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			logger.Errorf("Failed to close file: %v", err)
+		}
+	}(logger.Out.(*os.File))
 
 	logWriter, err := rotatelogs.New(
 		logPath+".%Y%m%d%H%M",
@@ -229,24 +239,33 @@ func main() {
 		installService(*interfaceName, *frequency, localIP, logger)
 	} else {
 		for {
+			ctx, cancel := context.WithCancel(context.Background())
+
+			// context timeout for 5 minutes, for loop will restart after this to release resources
+			go func() {
+				<-time.After(5 * time.Minute)
+				cancel()
+			}()
+
 			var wg sync.WaitGroup
 			results := make(chan string, len(nodes))
 			errs := make(chan error, len(nodes))
 			for _, node := range nodes {
-				wg.Add(1)
 				if localIP == node {
 					logger.Println("skipping local node")
-					wg.Done()
 					continue
 				}
+				wg.Add(1)
+				pingContext, pingCancel := context.WithCancel(ctx)
 				go func(n string) {
 					defer wg.Done()
-					res, err := pingNode(*interfaceName, n, logger)
+					res, err := pingNode(pingContext, *interfaceName, n, logger)
 					if err != nil {
 						errs <- err
 					} else {
 						results <- res
 					}
+					pingCancel()
 				}(node)
 			}
 			go func() {
@@ -262,7 +281,7 @@ func main() {
 			for err := range errs {
 				logger.Errorf("Ping failed: %v", err)
 			}
-
+			// If you want to wait for a certain duration between each set of pings:
 			time.Sleep(time.Duration(*frequency) * time.Second)
 		}
 	}

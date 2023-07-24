@@ -123,6 +123,8 @@ RuntimeMaxSec=1800s
 Restart=always
 User=root
 ExecStart=PING_CMD
+TasksMax=200
+MemoryMax=60M
 
 [Install]
 WantedBy=multi-user.target`
